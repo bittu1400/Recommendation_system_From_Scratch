@@ -1,3 +1,4 @@
+
 class Movie:
     def __init__(self, index, title, genre, release_year, avg_rating, num_reviews, review_highlights, life_insight, discovery_method, life_advice, suggested):
         self.index = index
@@ -17,9 +18,11 @@ class Movie:
 
     def _safe_int(self, value, warning):
         try:
-            return int(value)
+            if value is None or str(value).strip().lower() in ["", "nan"]:
+                raise ValueError
+            return int(float(value))
         except (ValueError, TypeError):
-            print(f"Warning: {warning}")
+            print(f"{value} Warning: {warning}")
             return 0
 
     def _safe_float(self, value, warning):
@@ -44,34 +47,35 @@ def parse_csv_line(line):
 
 def load_dataset(filepath):
     if not filepath or not isinstance(filepath, str):
-        raise ValueError("Invalid filepath provided")
+        print("Error: Invalid filepath provided")
+        return []
 
     movies, seen_titles = [], set()
     try:
-        with open(filepath, 'r', encoding='utf-8') as file:
+        with open(filepath, 'r') as file:
             next(file)  # Skip header
-            for index, line in enumerate(file, start=0):
+            for line_num, line in enumerate(file, start=2):
                 parts = parse_csv_line(line.strip())
                 if len(parts) != 10:
-                    print(f"Skipping row at line {index + 2} due to incorrect field count: {len(parts)} fields, expected 10")
+                    print(f"Skipping row at line {line_num}: incorrect field count ({len(parts)})")
                     continue
                 title = parts[0]
-                normalized_title = Movie(0, title, "", "", 0, 0, "", "", "", "", "")._normalize_title(title)
+                normalized_title = Movie(0, *parts)._normalize_title(title)
                 if normalized_title in seen_titles:
-                    print(f"Skipping duplicate movie at line {index + 2}: {title}")
+                    print(f"Skipping duplicate movie at line {line_num}: {title}")
                     continue
                 seen_titles.add(normalized_title)
                 try:
-                    movie = Movie(index, *parts)
+                    # Use list index as movie.index
+                    movie = Movie(len(movies), *parts)
                     movies.append(movie)
                 except Exception as e:
-                    print(f"Skipping row at line {index + 2} due to invalid data: {parts}, Error: {e}")
+                    print(f"Skipping row at line {line_num}: invalid data: {parts}, Error: {e}")
     except FileNotFoundError:
-        print(f"Dataset file not found: {filepath}")
+        print(f"Error: Dataset file not found: {filepath}")
     except Exception as e:
         print(f"Error loading dataset: {e}")
     return movies
-
 def compute_similarity(m1, m2):
     score = 0
     advice1, advice2 = set(m1.life_advice.split()), set(m2.life_advice.split())
@@ -113,7 +117,7 @@ def build_graph(movies, threshold):
     return graph
 
 def normalize_title(text):
-    return text.strip().lower().replace('“', '"').replace('”', '"').replace('’', "'")
+    return str(text).strip().lower().replace('“', '"').replace('”', '"').replace('’', "'")
 
 def find_start_index(movies, input_title):
     input_title_clean = normalize_title(input_title)
@@ -126,30 +130,29 @@ def find_start_index(movies, input_title):
     return -1
 
 def find_longest_path(movies, graph, start_title, max_length=6):
-    start = find_start_index(movies, start_title)
-    if start == -1:
-        print("❌ Start movie not found.")
+    if not movies:
+        print("Error: Empty movie list")
         return []
 
-    path, visited, current, step = [start], {start}, start, 0
+    start = find_start_index(movies, start_title)
+    if start == -1 or start >= len(movies):
+        print(f"Error: Invalid start index for {start_title}")
+        return []
+
+    path, visited, current = [start], {start}, start
     while len(path) < max_length:
         neighbors = [(n, s) for n, s in graph.get(current, []) if n not in visited]
         if not neighbors:
             break
-        if step < 3:
-            next_node, _ = max(neighbors, key=lambda x: x[1])
-        else:
-            next_node, _ = max(
-                [(n, s - 6 if movies[current].discovery_method == movies[n].discovery_method else s) for n, s in neighbors],
-                key=lambda x: x[1]
-            )
+        next_node, score = max(neighbors, key=lambda x: x[1])
+        if next_node < 0 or next_node >= len(movies):
+            print(f"Error: Invalid neighbor index {next_node} for movie {movies[current].title.title()}")
+            break
         path.append(next_node)
         visited.add(next_node)
         current = next_node
-        step += 1
 
-    return [movies[i].title.title() for i in path]
-
+    return path
 def find_longest_path_bfs(graph, movies, start, max_len=6):
     queue = [(start, [start], 0)]  # (current_node, path_so_far, total_score)
     best_path = []
@@ -184,30 +187,44 @@ def main():
     graph = build_graph(movies, threshold)
     print("Graph constructed. Edges per node:")
     for node, edges in graph.items():
+        if node < 0 or node >= len(movies):
+            print(f"Error: Invalid graph node index {node}")
+            continue
         print(f"Movie {movies[node].title.title()}: {len(edges)} edges")
 
     title_to_index = {movie.title: movie.index for movie in movies}
     start_title = input('\nEnter the starting movie: ').strip().lower()
     if start_title not in title_to_index:
-        print("Start movie not found in dataset.")
+        suggestions = [movie.title.title() for movie in movies if start_title in movie.title]
+        if suggestions:
+            print(f"Movie not found. Did you mean one of these? {', '.join(suggestions[:3])}")
+        else:
+            print("Start movie not found in dataset.")
         return
     start_index = title_to_index[start_title]
 
-    mode = input("\nChoose mode: (1) Greedy DFS-like  (2) BFS \nEnter 1 or 2: ").strip()
+    while True:
+        mode = input("\nChoose mode: (1) Greedy DFS  (2) BFS \nEnter 1 or 2: ").strip()
+        if mode in ['1', '2']:
+            break
+        print("Invalid mode. Please enter 1 or 2.")
 
     if mode == '2':
         path = find_longest_path_bfs(graph, movies, start_index)
         label = "🔗 BFS-Based Recommendation Chain"
     else:
-        path = find_longest_path(movies, graph, start_index)
-        label = "🎬 Greedy Longest Recommendation Chain"
+        path = find_longest_path(movies, graph, start_title)
+        label = "🎬 Greedy DFS-Based Recommendation Chain"
 
-    if path:
-        print(f"\n{label}:")
-        for idx in path:
-            print("->", movies[idx].title.title())
-    else:
+    if not path:
         print("No recommendation chain found.")
+        return
 
+    print(f"\n{label}:")
+    for idx in path:
+        if idx < 0 or idx >= len(movies):
+            print(f"Error: Invalid path index {idx}")
+            continue
+        print("->", movies[idx].title.title())
 if __name__ == "__main__":
     main()
